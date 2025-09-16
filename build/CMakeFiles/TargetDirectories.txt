@@ -1,0 +1,7 @@
+/home/daoping_223/GPU-Transfer-Benchmark/build/CMakeFiles/cuda_transfer_benchmark.dir
+/home/daoping_223/GPU-Transfer-Benchmark/build/CMakeFiles/edit_cache.dir
+/home/daoping_223/GPU-Transfer-Benchmark/build/CMakeFiles/rebuild_cache.dir
+/home/daoping_223/GPU-Transfer-Benchmark/build/CMakeFiles/list_install_components.dir
+/home/daoping_223/GPU-Transfer-Benchmark/build/CMakeFiles/install.dir
+/home/daoping_223/GPU-Transfer-Benchmark/build/CMakeFiles/install/local.dir
+/home/daoping_223/GPU-Transfer-Benchmark/build/CMakeFiles/install/strip.dir
