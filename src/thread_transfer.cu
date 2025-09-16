@@ -1,8 +1,46 @@
 #include "thread_transfer.h"
 #include <algorithm>
 
-// 简化的kernels - 注意这些是为了编译通过的最小实现
-__global__ void simple_d2d_kernel(int* d_dst, const int* d_src, size_t count) {
+// H2D Kernels - 从主机内存读取并写入设备内存
+__global__ void h2d_basic_kernel(int* d_dst, const int* h_src, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    for (size_t i = idx; i < count; i += stride) {
+        d_dst[i] = h_src[i];
+    }
+}
+
+__global__ void h2d_vectorized_kernel(uint4* d_dst, const uint4* h_src, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    for (size_t i = idx; i < count; i += stride) {
+        d_dst[i] = h_src[i];
+    }
+}
+
+// D2H Kernels - 从设备内存读取并写入主机内存
+__global__ void d2h_basic_kernel(int* h_dst, const int* d_src, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    for (size_t i = idx; i < count; i += stride) {
+        h_dst[i] = d_src[i];
+    }
+}
+
+__global__ void d2h_vectorized_kernel(uint4* h_dst, const uint4* d_src, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    for (size_t i = idx; i < count; i += stride) {
+        h_dst[i] = d_src[i];
+    }
+}
+
+// D2D Kernels - 设备到设备拷贝
+__global__ void d2d_basic_kernel(int* d_dst, const int* d_src, size_t count) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
     
@@ -11,50 +49,98 @@ __global__ void simple_d2d_kernel(int* d_dst, const int* d_src, size_t count) {
     }
 }
 
-__global__ void simple_d2d_vectorized_kernel(uint4* d_dst, const uint4* d_src, size_t count) {
+__global__ void d2d_vectorized_kernel(uint4* d_dst, const uint4* d_src, size_t count) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
     
     for (size_t i = idx; i < count; i += stride) {
         d_dst[i] = d_src[i];
+    }
+}
+
+// 共享内存优化的D2D kernel
+__global__ void d2d_shared_memory_kernel(int* d_dst, const int* d_src, size_t count) {
+    __shared__ int shared_buffer[256]; // 与block size匹配
+    
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    for (size_t base = blockIdx.x * blockDim.x; base < count; base += stride) {
+        size_t local_idx = threadIdx.x;
+        size_t global_idx = base + local_idx;
+        
+        // 协作加载到共享内存
+        if (global_idx < count) {
+            shared_buffer[local_idx] = d_src[global_idx];
+        }
+        
+        __syncthreads();
+        
+        // 协作写入到目标内存
+        if (global_idx < count) {
+            d_dst[global_idx] = shared_buffer[local_idx];
+        }
+        
+        __syncthreads();
+    }
+}
+
+// 多流优化的D2D kernel（基础版本，实际多流在外部管理）
+__global__ void d2d_multi_stream_kernel(uint4* d_dst, const uint4* d_src, size_t count, size_t offset) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x + offset;
+    
+    if (idx < count) {
+        d_dst[idx] = d_src[idx];
     }
 }
 
 extern "C" {
     void launch_h2d_basic_kernel(void* d_dst, void* h_src, size_t count, 
                                 int grid_size, int block_size, cudaStream_t stream) {
-        // 简化实现 - 使用DMA代替
-        cudaMemcpyAsync(d_dst, h_src, count * sizeof(int), cudaMemcpyHostToDevice, stream);
+        h2d_basic_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<int*>(d_dst), static_cast<const int*>(h_src), count);
     }
     
     void launch_h2d_vectorized_kernel(void* d_dst, void* h_src, size_t count,
                                      int grid_size, int block_size, cudaStream_t stream) {
-        // 简化实现 - 使用DMA代替
-        cudaMemcpyAsync(d_dst, h_src, count * sizeof(uint4), cudaMemcpyHostToDevice, stream);
+        h2d_vectorized_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<uint4*>(d_dst), static_cast<const uint4*>(h_src), count);
     }
     
     void launch_d2h_basic_kernel(void* h_dst, void* d_src, size_t count,
                                 int grid_size, int block_size, cudaStream_t stream) {
-        // 简化实现 - 使用DMA代替
-        cudaMemcpyAsync(h_dst, d_src, count * sizeof(int), cudaMemcpyDeviceToHost, stream);
+        d2h_basic_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<int*>(h_dst), static_cast<const int*>(d_src), count);
     }
     
     void launch_d2h_vectorized_kernel(void* h_dst, void* d_src, size_t count,
                                      int grid_size, int block_size, cudaStream_t stream) {
-        // 简化实现 - 使用DMA代替
-        cudaMemcpyAsync(h_dst, d_src, count * sizeof(uint4), cudaMemcpyDeviceToHost, stream);
+        d2h_vectorized_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<uint4*>(h_dst), static_cast<const uint4*>(d_src), count);
     }
     
     void launch_d2d_basic_kernel(void* d_dst, void* d_src, size_t count,
                                 int grid_size, int block_size, cudaStream_t stream) {
-        simple_d2d_kernel<<<grid_size, block_size, 0, stream>>>(
+        d2d_basic_kernel<<<grid_size, block_size, 0, stream>>>(
             static_cast<int*>(d_dst), static_cast<const int*>(d_src), count);
     }
     
     void launch_d2d_vectorized_kernel(void* d_dst, void* d_src, size_t count,
                                      int grid_size, int block_size, cudaStream_t stream) {
-        simple_d2d_vectorized_kernel<<<grid_size, block_size, 0, stream>>>(
+        d2d_vectorized_kernel<<<grid_size, block_size, 0, stream>>>(
             static_cast<uint4*>(d_dst), static_cast<const uint4*>(d_src), count);
+    }
+    
+    void launch_d2d_shared_memory_kernel(void* d_dst, void* d_src, size_t count,
+                                        int grid_size, int block_size, cudaStream_t stream) {
+        d2d_shared_memory_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<int*>(d_dst), static_cast<const int*>(d_src), count);
+    }
+    
+    void launch_d2d_multi_stream_kernel(void* d_dst, void* d_src, size_t count, size_t offset,
+                                       int grid_size, int block_size, cudaStream_t stream) {
+        d2d_multi_stream_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<uint4*>(d_dst), static_cast<const uint4*>(d_src), count, offset);
     }
 }
 
@@ -196,13 +282,59 @@ double ThreadTransfer::benchmark_d2d_vectorized(void* d_dst, void* d_src, size_t
 }
 
 double ThreadTransfer::benchmark_d2d_shared_memory(void* d_dst, void* d_src, size_t size) {
-    // 简化实现，使用基础版本
-    return benchmark_d2d_vectorized(d_dst, d_src, size);
+    size_t count = size / sizeof(int);
+    int grid_size = calculate_grid_size(size, sizeof(int));
+    
+    CUDA_CHECK(cudaEventRecord(start_event_, stream_));
+    launch_d2d_shared_memory_kernel(d_dst, d_src, count, grid_size, BLOCK_SIZE, stream_);
+    CUDA_CHECK(cudaEventRecord(stop_event_, stream_));
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    
+    return get_elapsed_time();
 }
 
 double ThreadTransfer::benchmark_d2d_multi_stream(void* d_dst, void* d_src, size_t size) {
-    // 简化实现，使用基础版本
-    return benchmark_d2d_vectorized(d_dst, d_src, size);
+    const int num_streams = 4;
+    cudaStream_t streams[num_streams];
+    
+    // 创建多个流
+    for (int i = 0; i < num_streams; ++i) {
+        CUDA_CHECK(cudaStreamCreate(&streams[i]));
+    }
+    
+    size_t count = size / sizeof(uint4);
+    size_t chunk_size = (count + num_streams - 1) / num_streams;
+    
+    CUDA_CHECK(cudaEventRecord(start_event_));
+    
+    // 在多个流中并行执行
+    for (int i = 0; i < num_streams; ++i) {
+        size_t offset = i * chunk_size;
+        size_t current_chunk_size = std::min(chunk_size, count - offset);
+        
+        if (current_chunk_size > 0) {
+            int grid_size = (current_chunk_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            grid_size = std::min(grid_size, MAX_GRID_SIZE);
+            
+            launch_d2d_multi_stream_kernel(d_dst, d_src, count, offset, 
+                                          grid_size, BLOCK_SIZE, streams[i]);
+        }
+    }
+    
+    // 同步所有流
+    for (int i = 0; i < num_streams; ++i) {
+        CUDA_CHECK(cudaStreamSynchronize(streams[i]));
+    }
+    
+    CUDA_CHECK(cudaEventRecord(stop_event_));
+    CUDA_CHECK(cudaEventSynchronize(stop_event_));
+    
+    // 清理流
+    for (int i = 0; i < num_streams; ++i) {
+        CUDA_CHECK(cudaStreamDestroy(streams[i]));
+    }
+    
+    return get_elapsed_time();
 }
 
 // P2P函数简化实现

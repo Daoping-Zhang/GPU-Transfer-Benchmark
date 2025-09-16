@@ -31,7 +31,9 @@ void TransferBenchmark::initialize_test_sizes() {
         4096,           // 4KB  
         16384,          // 16KB
         65536,          // 64KB
+        131072,         // 128KB
         262144,         // 256KB
+        524288,         // 512KB
         1048576,        // 1MB
         4194304,        // 4MB
         16777216,       // 16MB
@@ -109,6 +111,8 @@ std::vector<BenchmarkResult> TransferBenchmark::benchmark_h2d(size_t size) {
     try {
         // DMA H2D测试 - Sync Pinned
         {
+            CUDA_CHECK(cudaMemset(buffers.d_dst, 0x00, buffers.size));
+
             double total_time = 0;
             for (int i = 0; i < warmup_iterations_; ++i) {
                 dma_tester_->benchmark_h2d_sync_pinned(buffers.d_dst, buffers.h_pinned, size);
@@ -125,6 +129,7 @@ std::vector<BenchmarkResult> TransferBenchmark::benchmark_h2d(size_t size) {
         
         // DMA H2D测试 - Async Pinned
         {
+            CUDA_CHECK(cudaMemset(buffers.d_dst, 0x00, buffers.size));
             double total_time = 0;
             for (int i = 0; i < warmup_iterations_; ++i) {
                 dma_tester_->benchmark_h2d_async_pinned(buffers.d_dst, buffers.h_pinned, size);
@@ -141,6 +146,7 @@ std::vector<BenchmarkResult> TransferBenchmark::benchmark_h2d(size_t size) {
         
         // Thread H2D测试 - Basic Pinned
         {
+            CUDA_CHECK(cudaMemset(buffers.d_dst, 0x00, buffers.size));
             double total_time = 0;
             for (int i = 0; i < warmup_iterations_; ++i) {
                 thread_tester_->benchmark_h2d_basic_pinned(buffers.d_dst, buffers.h_pinned, size);
@@ -157,6 +163,7 @@ std::vector<BenchmarkResult> TransferBenchmark::benchmark_h2d(size_t size) {
         
         // Thread H2D测试 - Vectorized Pinned
         {
+            CUDA_CHECK(cudaMemset(buffers.d_dst, 0x00, buffers.size));
             double total_time = 0;
             for (int i = 0; i < warmup_iterations_; ++i) {
                 thread_tester_->benchmark_h2d_vectorized_pinned(buffers.d_dst, buffers.h_pinned, size);
@@ -333,6 +340,8 @@ bool TransferBenchmark::verify_transfer_result(const MemoryBuffers& buffers, Tra
     } catch (const std::exception& e) {
         result = false;
     }
+
+    
     
     delete[] sample_src;
     delete[] sample_dst;
