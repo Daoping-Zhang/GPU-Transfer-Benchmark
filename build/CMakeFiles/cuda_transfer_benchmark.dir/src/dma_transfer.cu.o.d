@@ -252,4 +252,39 @@ CMakeFiles/cuda_transfer_benchmark.dir/src/dma_transfer.cu.o : /home/daoping_223
     /usr/include/c++/12/bits/exception_ptr.h \
     /usr/include/c++/12/bits/cxxabi_init_exception.h \
     /usr/include/c++/12/typeinfo \
-    /usr/include/c++/12/bits/nested_exception.h
+    /usr/include/c++/12/bits/nested_exception.h \
+    /usr/include/c++/12/iostream \
+    /usr/include/c++/12/ostream \
+    /usr/include/c++/12/ios \
+    /usr/include/c++/12/bits/ios_base.h \
+    /usr/include/c++/12/ext/atomicity.h \
+    /usr/include/x86_64-linux-gnu/c++/12/bits/gthr.h \
+    /usr/include/x86_64-linux-gnu/c++/12/bits/gthr-default.h \
+    /usr/include/pthread.h \
+    /usr/include/sched.h \
+    /usr/include/x86_64-linux-gnu/bits/sched.h \
+    /usr/include/x86_64-linux-gnu/bits/types/struct_sched_param.h \
+    /usr/include/x86_64-linux-gnu/bits/cpu-set.h \
+    /usr/include/x86_64-linux-gnu/bits/setjmp.h \
+    /usr/include/x86_64-linux-gnu/bits/types/struct___jmp_buf_tag.h \
+    /usr/include/x86_64-linux-gnu/c++/12/bits/atomic_word.h \
+    /usr/include/x86_64-linux-gnu/sys/single_threaded.h \
+    /usr/include/c++/12/bits/locale_classes.h \
+    /usr/include/c++/12/bits/locale_classes.tcc \
+    /usr/include/c++/12/system_error \
+    /usr/include/x86_64-linux-gnu/c++/12/bits/error_constants.h \
+    /usr/include/c++/12/streambuf \
+    /usr/include/c++/12/bits/streambuf.tcc \
+    /usr/include/c++/12/bits/basic_ios.h \
+    /usr/include/c++/12/bits/locale_facets.h \
+    /usr/include/c++/12/cwctype \
+    /usr/include/wctype.h \
+    /usr/include/x86_64-linux-gnu/bits/wctype-wchar.h \
+    /usr/include/x86_64-linux-gnu/c++/12/bits/ctype_base.h \
+    /usr/include/c++/12/bits/streambuf_iterator.h \
+    /usr/include/x86_64-linux-gnu/c++/12/bits/ctype_inline.h \
+    /usr/include/c++/12/bits/locale_facets.tcc \
+    /usr/include/c++/12/bits/basic_ios.tcc \
+    /usr/include/c++/12/bits/ostream.tcc \
+    /usr/include/c++/12/istream \
+    /usr/include/c++/12/bits/istream.tcc

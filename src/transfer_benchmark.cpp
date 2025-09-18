@@ -9,6 +9,98 @@
 #include <map>
 #include <sstream>
 
+
+
+// 在TransferBenchmark类中添加P2P辅助函数的实现
+TransferBenchmark::P2PBuffers TransferBenchmark::allocate_p2p_buffers(size_t size, int src_device, int dst_device) {
+    P2PBuffers buffers;
+    buffers.size = size;
+    
+    int original_device;
+    CUDA_CHECK(cudaGetDevice(&original_device));
+    
+    try {
+        // 在源设备分配内存
+        CUDA_CHECK(cudaSetDevice(src_device));
+        CUDA_CHECK(cudaMalloc(&buffers.d_src, size));
+        CUDA_CHECK(cudaMemset(buffers.d_src, 0xAB, size));
+        
+        // 在目标设备分配内存
+        CUDA_CHECK(cudaSetDevice(dst_device));
+        CUDA_CHECK(cudaMalloc(&buffers.d_dst, size));
+        CUDA_CHECK(cudaMemset(buffers.d_dst, 0x00, size));
+        
+        CUDA_CHECK(cudaSetDevice(original_device));
+        return buffers;
+        
+    } catch (const std::exception& e) {
+        CUDA_CHECK(cudaSetDevice(original_device));
+        throw;
+    }
+}
+
+void TransferBenchmark::free_p2p_buffers(const P2PBuffers& buffers, int src_device, int dst_device) {
+    int original_device;
+    CUDA_CHECK(cudaGetDevice(&original_device));
+    
+    try {
+        if (buffers.d_src) {
+            CUDA_CHECK(cudaSetDevice(src_device));
+            CUDA_CHECK(cudaFree(buffers.d_src));
+        }
+        
+        if (buffers.d_dst) {
+            CUDA_CHECK(cudaSetDevice(dst_device));
+            CUDA_CHECK(cudaFree(buffers.d_dst));
+        }
+        
+        CUDA_CHECK(cudaSetDevice(original_device));
+    } catch (const std::exception& e) {
+        CUDA_CHECK(cudaSetDevice(original_device));
+        // 静默处理清理错误
+    }
+}
+
+void TransferBenchmark::reset_p2p_buffers(const P2PBuffers& buffers, size_t size, int dst_device) {
+    int original_device;
+    CUDA_CHECK(cudaGetDevice(&original_device));
+    
+    try {
+        CUDA_CHECK(cudaSetDevice(dst_device));
+        CUDA_CHECK(cudaMemset(buffers.d_dst, 0x00, size));
+        CUDA_CHECK(cudaSetDevice(original_device));
+    } catch (const std::exception& e) {
+        CUDA_CHECK(cudaSetDevice(original_device));
+        throw;
+    }
+}
+
+bool TransferBenchmark::verify_p2p_transfer_result(const P2PBuffers& buffers, size_t size) {
+    const size_t sample_size = std::min(size, static_cast<size_t>(1024));
+    std::vector<char> sample_src(sample_size);
+    std::vector<char> sample_dst(sample_size);
+    
+    int original_device;
+    CUDA_CHECK(cudaGetDevice(&original_device));
+    
+    try {
+        // 读取源数据
+        CUDA_CHECK(cudaMemcpy(sample_src.data(), buffers.d_src, sample_size, cudaMemcpyDeviceToHost));
+        // 读取目标数据  
+        CUDA_CHECK(cudaMemcpy(sample_dst.data(), buffers.d_dst, sample_size, cudaMemcpyDeviceToHost));
+        
+        bool result = (memcmp(sample_src.data(), sample_dst.data(), sample_size) == 0);
+        
+        CUDA_CHECK(cudaSetDevice(original_device));
+        return result;
+        
+    } catch (const std::exception& e) {
+        CUDA_CHECK(cudaSetDevice(original_device));
+        return false;
+    }
+}
+
+
 TransferBenchmark::TransferBenchmark() 
     : iterations_(10), warmup_iterations_(3), verify_results_(true), gpu_count_(0) {
     
@@ -292,7 +384,7 @@ std::vector<BenchmarkResult> TransferBenchmark::benchmark_d2d(size_t size) {
     return results;
 }
 
-std::vector<BenchmarkResult> TransferBenchmark::benchmark_p2p(size_t /* size */) {
+std::vector<BenchmarkResult> TransferBenchmark::benchmark_p2p(size_t size) {
     std::vector<BenchmarkResult> results;
     
     if (gpu_count_ < 2) {
@@ -300,11 +392,103 @@ std::vector<BenchmarkResult> TransferBenchmark::benchmark_p2p(size_t /* size */)
         return results;
     }
     
-    // 暂时跳过P2P测试，避免复杂性
-    std::cout << "P2P benchmark temporarily disabled for simplification" << std::endl;
+    std::cout << "Running P2P benchmarks between GPU devices..." << std::endl;
+    
+    // 测试第一对GPU (0 -> 1)
+    int src_device = 0;
+    int dst_device = 1;
+    
+    try {
+        // 分配P2P内存缓冲区
+        auto p2p_buffers = allocate_p2p_buffers(size, src_device, dst_device);
+        
+        std::cout << "  Testing P2P transfer: GPU " << src_device << " -> GPU " << dst_device << std::endl;
+        
+        // DMA P2P测试 - Sync
+        {
+            double total_time = 0;
+            for (int i = 0; i < warmup_iterations_; ++i) {
+                dma_tester_->benchmark_p2p_sync(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+            }
+            for (int i = 0; i < iterations_; ++i) {
+                // 重置目标数据
+                reset_p2p_buffers(p2p_buffers, size, dst_device);
+                double time = dma_tester_->benchmark_p2p_sync(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+                if (time > 0) total_time += time;
+            }
+            
+            if (total_time > 0) {
+                bool success = verify_results_ ? verify_p2p_transfer_result(p2p_buffers, size) : true;
+                results.push_back(create_result("DMA_P2P_Sync", TransferType::P2P, size, 
+                                               total_time / iterations_, success, "Device"));
+            }
+        }
+        
+        // DMA P2P测试 - Async
+        {
+            double total_time = 0;
+            for (int i = 0; i < warmup_iterations_; ++i) {
+                dma_tester_->benchmark_p2p_async(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+            }
+            for (int i = 0; i < iterations_; ++i) {
+                reset_p2p_buffers(p2p_buffers, size, dst_device);
+                double time = dma_tester_->benchmark_p2p_async(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+                if (time > 0) total_time += time;
+            }
+            
+            if (total_time > 0) {
+                bool success = verify_results_ ? verify_p2p_transfer_result(p2p_buffers, size) : true;
+                results.push_back(create_result("DMA_P2P_Async", TransferType::P2P, size, 
+                                               total_time / iterations_, success, "Device"));
+            }
+        }
+        
+        // Thread P2P测试 - Basic
+        {
+            double total_time = 0;
+            for (int i = 0; i < warmup_iterations_; ++i) {
+                thread_tester_->benchmark_p2p_basic(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+            }
+            for (int i = 0; i < iterations_; ++i) {
+                reset_p2p_buffers(p2p_buffers, size, dst_device);
+                double time = thread_tester_->benchmark_p2p_basic(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+                if (time > 0) total_time += time;
+            }
+            
+            if (total_time > 0) {
+                bool success = verify_results_ ? verify_p2p_transfer_result(p2p_buffers, size) : true;
+                results.push_back(create_result("Thread_P2P_Basic", TransferType::P2P, size, 
+                                               total_time / iterations_, success, "Device"));
+            }
+        }
+        
+        // Thread P2P测试 - Vectorized
+        {
+            double total_time = 0;
+            for (int i = 0; i < warmup_iterations_; ++i) {
+                thread_tester_->benchmark_p2p_vectorized(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+            }
+            for (int i = 0; i < iterations_; ++i) {
+                reset_p2p_buffers(p2p_buffers, size, dst_device);
+                double time = thread_tester_->benchmark_p2p_vectorized(p2p_buffers.d_dst, p2p_buffers.d_src, size, dst_device, src_device);
+                if (time > 0) total_time += time;
+            }
+            
+            if (total_time > 0) {
+                bool success = verify_results_ ? verify_p2p_transfer_result(p2p_buffers, size) : true;
+                results.push_back(create_result("Thread_P2P_Vectorized", TransferType::P2P, size, 
+                                               total_time / iterations_, success, "Device"));
+            }
+        }
+        
+        free_p2p_buffers(p2p_buffers, src_device, dst_device);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error in P2P benchmark: " << e.what() << std::endl;
+    }
+    
     return results;
 }
-
 bool TransferBenchmark::verify_transfer_result(const MemoryBuffers& buffers, TransferType type) {
     // 简化验证：检查目标是否包含源数据的模式
     const size_t sample_size = std::min(buffers.size, static_cast<size_t>(1024));

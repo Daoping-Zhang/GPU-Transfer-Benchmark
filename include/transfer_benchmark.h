@@ -41,6 +41,14 @@ private:
     bool verify_results_;
     std::vector<TransferType> test_types_;
     std::vector<size_t> test_sizes_;
+    // P2P内存缓冲区结构
+    struct P2PBuffers {
+        void* d_src;
+        void* d_dst;
+        size_t size;
+    };
+    
+
     
     // 测试对象
     std::unique_ptr<DMATransfer> dma_tester_;
@@ -71,6 +79,13 @@ private:
     // 辅助函数
     BenchmarkResult create_result(const std::string& method_name, TransferType type, size_t size, 
                                  double time_ms, bool success, const std::string& memory_type);
+
+
+    // P2P辅助函数
+    P2PBuffers allocate_p2p_buffers(size_t size, int src_device, int dst_device);
+    void free_p2p_buffers(const P2PBuffers& buffers, int src_device, int dst_device);
+    void reset_p2p_buffers(const P2PBuffers& buffers, size_t size, int dst_device);
+    bool verify_p2p_transfer_result(const P2PBuffers& buffers, size_t size);
 };
 
 #endif // TRANSFER_BENCHMARK_H

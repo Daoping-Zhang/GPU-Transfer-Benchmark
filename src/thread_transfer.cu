@@ -1,5 +1,44 @@
 #include "thread_transfer.h"
 #include <algorithm>
+#include <iostream>  // 添加这行
+
+
+// P2P Thread Copy Kernels
+__global__ void p2p_basic_kernel(int* d_dst, const int* d_src, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    for (size_t i = idx; i < count; i += stride) {
+        d_dst[i] = d_src[i];
+    }
+}
+
+__global__ void p2p_vectorized_kernel(uint4* d_dst, const uint4* d_src, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    for (size_t i = idx; i < count; i += stride) {
+        // 使用向量化访问提高P2P带宽
+        d_dst[i] = d_src[i];
+    }
+}
+
+// 优化的P2P kernel，使用更大的向量类型
+__global__ void p2p_optimized_kernel(longlong4* d_dst, const longlong4* d_src, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = blockDim.x * gridDim.x;
+    
+    const int ELEMENTS_PER_THREAD = 4;
+    
+    #pragma unroll
+    for (int k = 0; k < ELEMENTS_PER_THREAD; ++k) {
+        size_t i = idx + k * stride;
+        if (i < count) {
+            // 32字节P2P传输
+            d_dst[i] = d_src[i];
+        }
+    }
+}
 
 // H2D Kernels - 从主机内存读取并写入设备内存
 __global__ void h2d_basic_kernel(int* d_dst, const int* h_src, size_t count) {
@@ -62,7 +101,7 @@ __global__ void d2d_vectorized_kernel(uint4* d_dst, const uint4* d_src, size_t c
 __global__ void d2d_shared_memory_kernel(int* d_dst, const int* d_src, size_t count) {
     __shared__ int shared_buffer[256]; // 与block size匹配
     
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    //size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
     
     for (size_t base = blockIdx.x * blockDim.x; base < count; base += stride) {
@@ -95,6 +134,25 @@ __global__ void d2d_multi_stream_kernel(uint4* d_dst, const uint4* d_src, size_t
 }
 
 extern "C" {
+
+    void launch_p2p_basic_kernel(void* d_dst, void* d_src, size_t count,
+                                int grid_size, int block_size, cudaStream_t stream) {
+        p2p_basic_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<int*>(d_dst), static_cast<const int*>(d_src), count);
+    }
+    
+    void launch_p2p_vectorized_kernel(void* d_dst, void* d_src, size_t count,
+                                     int grid_size, int block_size, cudaStream_t stream) {
+        p2p_vectorized_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<uint4*>(d_dst), static_cast<const uint4*>(d_src), count);
+    }
+    
+    void launch_p2p_optimized_kernel(void* d_dst, void* d_src, size_t count,
+                                    int grid_size, int block_size, cudaStream_t stream) {
+        p2p_optimized_kernel<<<grid_size, block_size, 0, stream>>>(
+            static_cast<longlong4*>(d_dst), static_cast<const longlong4*>(d_src), count);
+    }
+
     void launch_h2d_basic_kernel(void* d_dst, void* h_src, size_t count, 
                                 int grid_size, int block_size, cudaStream_t stream) {
         h2d_basic_kernel<<<grid_size, block_size, 0, stream>>>(
@@ -337,11 +395,139 @@ double ThreadTransfer::benchmark_d2d_multi_stream(void* d_dst, void* d_src, size
     return get_elapsed_time();
 }
 
-// P2P函数简化实现
+// P2P Thread传输实现
 double ThreadTransfer::benchmark_p2p_basic(void* d_dst, void* d_src, size_t size, int dst_device, int src_device) {
-    return 0.0; // 简化跳过
+    int original_device;
+    CUDA_CHECK(cudaGetDevice(&original_device));
+    
+    try {
+        // 检查P2P能力
+        int can_access_peer;
+        CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access_peer, dst_device, src_device));
+        if (!can_access_peer) {
+            std::cout << "P2P access not supported between devices " 
+                      << src_device << " and " << dst_device << std::endl;
+            return 0.0;
+        }
+        
+        // 启用P2P访问
+        CUDA_CHECK(cudaSetDevice(dst_device));
+        cudaError_t p2p_result = cudaDeviceEnablePeerAccess(src_device, 0);
+        if (p2p_result != cudaSuccess && p2p_result != cudaErrorPeerAccessAlreadyEnabled) {
+            CUDA_CHECK(p2p_result);
+        }
+        
+        CUDA_CHECK(cudaSetDevice(src_device));
+        p2p_result = cudaDeviceEnablePeerAccess(dst_device, 0);
+        if (p2p_result != cudaSuccess && p2p_result != cudaErrorPeerAccessAlreadyEnabled) {
+            CUDA_CHECK(p2p_result);
+        }
+        
+        // 在目标设备上执行kernel
+        CUDA_CHECK(cudaSetDevice(dst_device));
+        
+        size_t count = size / sizeof(int);
+        int grid_size = calculate_grid_size(size, sizeof(int));
+        
+        cudaStream_t p2p_stream;
+        CUDA_CHECK(cudaStreamCreate(&p2p_stream));
+        
+        // 预热
+        launch_p2p_basic_kernel(d_dst, d_src, count, grid_size, BLOCK_SIZE, p2p_stream);
+        CUDA_CHECK(cudaStreamSynchronize(p2p_stream));
+        
+        // 计时
+        cudaEvent_t start, stop;
+        CUDA_CHECK(cudaEventCreate(&start));
+        CUDA_CHECK(cudaEventCreate(&stop));
+        
+        CUDA_CHECK(cudaEventRecord(start, p2p_stream));
+        launch_p2p_basic_kernel(d_dst, d_src, count, grid_size, BLOCK_SIZE, p2p_stream);
+        CUDA_CHECK(cudaEventRecord(stop, p2p_stream));
+        CUDA_CHECK(cudaStreamSynchronize(p2p_stream));
+        
+        float milliseconds = 0;
+        CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, stop));
+        
+        // 清理
+        CUDA_CHECK(cudaEventDestroy(start));
+        CUDA_CHECK(cudaEventDestroy(stop));
+        CUDA_CHECK(cudaStreamDestroy(p2p_stream));
+        CUDA_CHECK(cudaSetDevice(original_device));
+        
+        return static_cast<double>(milliseconds);
+        
+    } catch (const std::exception& e) {
+        CUDA_CHECK(cudaSetDevice(original_device));
+        std::cerr << "P2P basic thread transfer error: " << e.what() << std::endl;
+        return 0.0;
+    }
 }
 
 double ThreadTransfer::benchmark_p2p_vectorized(void* d_dst, void* d_src, size_t size, int dst_device, int src_device) {
-    return 0.0; // 简化跳过
+    int original_device;
+    CUDA_CHECK(cudaGetDevice(&original_device));
+    
+    try {
+        // 检查P2P能力
+        int can_access_peer;
+        CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access_peer, dst_device, src_device));
+        if (!can_access_peer) {
+            return 0.0;
+        }
+        
+        // 启用P2P访问
+        CUDA_CHECK(cudaSetDevice(dst_device));
+        cudaError_t p2p_result = cudaDeviceEnablePeerAccess(src_device, 0);
+        if (p2p_result != cudaSuccess && p2p_result != cudaErrorPeerAccessAlreadyEnabled) {
+            CUDA_CHECK(p2p_result);
+        }
+        
+        CUDA_CHECK(cudaSetDevice(src_device));
+        p2p_result = cudaDeviceEnablePeerAccess(dst_device, 0);
+        if (p2p_result != cudaSuccess && p2p_result != cudaErrorPeerAccessAlreadyEnabled) {
+            CUDA_CHECK(p2p_result);
+        }
+        
+        // 在目标设备上执行
+        CUDA_CHECK(cudaSetDevice(dst_device));
+        
+        size_t count = size / sizeof(uint4);
+        int grid_size = calculate_grid_size(size, sizeof(uint4));
+        
+        cudaStream_t p2p_stream;
+        CUDA_CHECK(cudaStreamCreate(&p2p_stream));
+        
+        // 预热
+        launch_p2p_vectorized_kernel(d_dst, d_src, count, grid_size, BLOCK_SIZE, p2p_stream);
+        CUDA_CHECK(cudaStreamSynchronize(p2p_stream));
+        
+        // 计时
+        cudaEvent_t start, stop;
+        CUDA_CHECK(cudaEventCreate(&start));
+        CUDA_CHECK(cudaEventCreate(&stop));
+        
+        CUDA_CHECK(cudaEventRecord(start, p2p_stream));
+        launch_p2p_vectorized_kernel(d_dst, d_src, count, grid_size, BLOCK_SIZE, p2p_stream);
+        CUDA_CHECK(cudaEventRecord(stop, p2p_stream));
+        CUDA_CHECK(cudaStreamSynchronize(p2p_stream));
+        
+        float milliseconds = 0;
+        CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, stop));
+        
+
+        
+        // 清理
+        CUDA_CHECK(cudaEventDestroy(start));
+        CUDA_CHECK(cudaEventDestroy(stop));
+        CUDA_CHECK(cudaStreamDestroy(p2p_stream));
+        CUDA_CHECK(cudaSetDevice(original_device));
+        
+        return static_cast<double>(milliseconds);
+        
+    } catch (const std::exception& e) {
+        CUDA_CHECK(cudaSetDevice(original_device));
+        std::cerr << "P2P vectorized thread transfer error: " << e.what() << std::endl;
+        return 0.0;
+    }
 }
